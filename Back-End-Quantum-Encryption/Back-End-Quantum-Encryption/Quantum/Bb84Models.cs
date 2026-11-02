@@ -16,6 +16,18 @@ public sealed record Bb84Options(
     public const int MaxQubits = 20_000;
 }
 
+/// <summary>Everything that happens to one photon between Alice and Bob, before sifting.</summary>
+public sealed record PhotonRound(
+    int Index,
+    int AliceBit,
+    Basis AliceBasis,
+    int SentPolarization,
+    Basis? EveBasis,
+    int? EveBit,
+    int? EveResentPolarization,
+    Basis BobBasis,
+    int BobBit);
+
 /// <summary>Everything that happened to one photon, from Alice to Bob.</summary>
 public sealed record QubitTrace(
     int Index,

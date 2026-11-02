@@ -17,53 +17,29 @@ public sealed class Bb84Simulator
         int n = options.QubitCount;
         var steps = new List<SimulationStep>();
 
-        // Step 1: Alice picks a random bit and a random basis for every photon.
-        int[] aliceBits = RandomBits(n, rng);
-        Basis[] aliceBases = RandomBases(n, rng);
+        // Every photon travels from Alice (through Eve, if she is listening) to Bob.
+        PhotonRound[] rounds = Enumerable.Range(0, n)
+            .Select(i => SendPhoton(i, options.EavesdropperEnabled, rng))
+            .ToArray();
+        int[] aliceBits = rounds.Select(r => r.AliceBit).ToArray();
+        Basis[] aliceBases = rounds.Select(r => r.AliceBasis).ToArray();
+        int[] bobBits = rounds.Select(r => r.BobBit).ToArray();
+        Basis[] bobBases = rounds.Select(r => r.BobBasis).ToArray();
+
+        // Steps 1-4 describe what happened to the photons above.
         steps.Add(new(1, "Alice generates random bits and bases",
             $"Alice flips a coin {n} times for the bits and {n} times for the bases (+ or ×). " +
             "Both lists stay secret for now."));
-
-        // Step 2: Alice encodes each bit as a polarized photon and sends it.
-        var photons = new Photon[n];
-        int[] sentPolarization = new int[n];
-        for (int i = 0; i < n; i++)
-        {
-            photons[i] = Photon.Prepare(aliceBits[i], aliceBases[i]);
-            sentPolarization[i] = photons[i].PolarizationDegrees;
-        }
         steps.Add(new(2, "Alice sends polarized photons",
             "Each bit becomes a photon: in + it is 0° (0) or 90° (1), in × it is 45° (0) or 135° (1). " +
             "The photons travel over the quantum channel to Bob."));
-
-        // Step 3 (optional): Eve intercepts, measures in a random basis and sends a new photon on.
-        Basis[]? eveBases = null;
-        int[]? eveBits = null;
-        int[]? eveResent = null;
         if (options.EavesdropperEnabled)
         {
-            eveBases = RandomBases(n, rng);
-            eveBits = new int[n];
-            eveResent = new int[n];
-            for (int i = 0; i < n; i++)
-            {
-                eveBits[i] = photons[i].Measure(eveBases[i], rng);
-                // Eve cannot copy a photon (no-cloning theorem), so she sends Bob a fresh
-                // one prepared in her own basis with the result she measured.
-                photons[i] = Photon.Prepare(eveBits[i], eveBases[i]);
-                eveResent[i] = photons[i].PolarizationDegrees;
-            }
             steps.Add(new(3, "Eve intercepts the photons",
                 "Eve does not know Alice's bases, so she guesses one for every photon. " +
                 "About half the time she guesses wrong, gets a random result and sends Bob a photon " +
                 "in the wrong state. That leaves traces Alice and Bob can detect."));
         }
-
-        // Step 4: Bob measures every photon in a basis of his own choosing.
-        Basis[] bobBases = RandomBases(n, rng);
-        int[] bobBits = new int[n];
-        for (int i = 0; i < n; i++)
-            bobBits[i] = photons[i].Measure(bobBases[i], rng);
         steps.Add(new(steps.Count + 1, "Bob measures with random bases",
             "Bob does not know Alice's bases either, so he picks + or × at random for every photon. " +
             "If he picks the same basis as Alice he reads her bit; otherwise his result is a coin flip."));
@@ -107,10 +83,10 @@ public sealed class Bb84Simulator
                 Index: i,
                 AliceBit: aliceBits[i],
                 AliceBasis: aliceBases[i],
-                SentPolarization: sentPolarization[i],
-                EveBasis: eveBases?[i],
-                EveBit: eveBits?[i],
-                EveResentPolarization: eveResent?[i],
+                SentPolarization: rounds[i].SentPolarization,
+                EveBasis: rounds[i].EveBasis,
+                EveBit: rounds[i].EveBit,
+                EveResentPolarization: rounds[i].EveResentPolarization,
                 BobBasis: bobBases[i],
                 BobBit: bobBits[i],
                 BasesMatch: match,
@@ -136,6 +112,35 @@ public sealed class Bb84Simulator
             KeysMatch: aliceKey == bobKey);
     }
 
+    /// <summary>
+    /// Sends one photon from Alice to Bob, optionally through Eve. <see cref="Run"/> calls this
+    /// for every photon; the live SignalR hub will call it one photon at a time.
+    /// </summary>
+    public static PhotonRound SendPhoton(int index, bool eavesdropper, Random rng)
+    {
+        int aliceBit = rng.Next(2);
+        Basis aliceBasis = RandomBasis(rng);
+        var photon = Photon.Prepare(aliceBit, aliceBasis);
+        int sent = photon.PolarizationDegrees;
+
+        Basis? eveBasis = null;
+        int? eveBit = null;
+        int? eveResent = null;
+        if (eavesdropper)
+        {
+            eveBasis = RandomBasis(rng);
+            eveBit = photon.Measure(eveBasis.Value, rng);
+            // Eve cannot copy a photon (no-cloning theorem), so she sends Bob a fresh
+            // one prepared in her own basis with the result she measured.
+            photon = Photon.Prepare(eveBit.Value, eveBasis.Value);
+            eveResent = photon.PolarizationDegrees;
+        }
+
+        Basis bobBasis = RandomBasis(rng);
+        int bobBit = photon.Measure(bobBasis, rng);
+        return new PhotonRound(index, aliceBit, aliceBasis, sent, eveBasis, eveBit, eveResent, bobBasis, bobBit);
+    }
+
     private static void Validate(Bb84Options o)
     {
         if (o.QubitCount < 1 || o.QubitCount > Bb84Options.MaxQubits)
@@ -146,11 +151,8 @@ public sealed class Bb84Simulator
             throw new ArgumentOutOfRangeException(nameof(o.QberThreshold), "QberThreshold must be between 0 and 1.");
     }
 
-    private static int[] RandomBits(int n, Random rng) =>
-        Enumerable.Range(0, n).Select(_ => rng.Next(2)).ToArray();
-
-    private static Basis[] RandomBases(int n, Random rng) =>
-        Enumerable.Range(0, n).Select(_ => rng.Next(2) == 0 ? Basis.Rectilinear : Basis.Diagonal).ToArray();
+    private static Basis RandomBasis(Random rng) =>
+        rng.Next(2) == 0 ? Basis.Rectilinear : Basis.Diagonal;
 
     // Fisher-Yates shuffle on a copy, used to pick a random sample.
     private static List<int> Shuffle(IEnumerable<int> source, Random rng)
