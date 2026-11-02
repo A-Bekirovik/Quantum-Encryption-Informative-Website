@@ -1,4 +1,5 @@
 ﻿using System.Text.Json.Serialization;
+using Back_End_Quantum_Encryption.Hubs;
 using Back_End_Quantum_Encryption.Quantum;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -10,6 +11,10 @@ builder.Services
 
 builder.Services.AddSingleton<Bb84Simulator>();
 
+// SignalR: real-time connection with the front-end (WebSockets under the hood).
+builder.Services.AddSignalR()
+    .AddJsonProtocol(o => o.PayloadSerializerOptions.Converters.Add(new JsonStringEnumConverter()));
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -17,10 +22,10 @@ builder.Services.AddSwaggerGen(c =>
     if (File.Exists(xml)) c.IncludeXmlComments(xml);
 });
 
-// Allow the Vite dev server to call this API.
+// Allow the Vite dev server to call this API. SignalR also needs AllowCredentials.
 var frontendOrigins = builder.Configuration.GetSection("Cors:FrontendOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(o => o.AddDefaultPolicy(p =>
-    p.WithOrigins(frontendOrigins).AllowAnyHeader().AllowAnyMethod()));
+    p.WithOrigins(frontendOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials()));
 
 var app = builder.Build();
 
@@ -35,6 +40,7 @@ if (app.Environment.IsDevelopment())
 
 app.UseCors();
 app.MapControllers();
+app.MapHub<Bb84Hub>("/hubs/bb84");
 
 app.Run();
 
